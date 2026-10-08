@@ -16,6 +16,7 @@ public sealed class GuardService : ServiceBase
     private Reconciler? _reconciler;
     private Timer? _timer;
     private IDisposable? _watch;
+    private int _generation;
 
     public GuardService(string configPath)
     {
@@ -38,15 +39,39 @@ public sealed class GuardService : ServiceBase
 
         _timer = new Timer(_ => Tick(), null, Timeout.Infinite, Timeout.Infinite);
         Tick();
-        _watch = Adapters.Watch(() => _timer?.Change(DebounceMs, PollMs));
+        _watch = Adapters.Watch(OnAdapterChanged);
     }
 
     protected override void OnStop()
     {
+        // Subscription first: no new adapter events. Then wait for a running Tick via _gate
+        // so the timer is never disposed under it.
         _watch?.Dispose();
         _watch = null;
-        _timer?.Dispose();
-        _timer = null;
+        lock (_gate)
+        {
+            _timer?.Dispose();
+            _timer = null;
+        }
+    }
+
+    // Runs on a native notification thread: cheap, no _gate, never disposes the subscription.
+    private void OnAdapterChanged()
+    {
+        Interlocked.Increment(ref _generation);
+        Arm(_timer, DebounceMs);
+    }
+
+    private static void Arm(Timer? timer, int dueMs)
+    {
+        try
+        {
+            timer?.Change(dueMs, PollMs);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Service is stopping.
+        }
     }
 
     private void Tick()
@@ -56,6 +81,8 @@ public sealed class GuardService : ServiceBase
             var timer = _timer;
             if (timer is null || _reconciler is null) return;
 
+            var generation = Volatile.Read(ref _generation);
+            var failed = false;
             try
             {
                 var result = _reconciler.Run();
@@ -66,13 +93,25 @@ public sealed class GuardService : ServiceBase
                         text += Environment.NewLine + string.Join(Environment.NewLine, result.Warnings);
                     Log(text, result.Warnings.Count > 0 ? EventLogEntryType.Warning : EventLogEntryType.Information);
                 }
-                timer.Change(PollMs, PollMs);
             }
             catch (Exception e)
             {
+                failed = true;
                 Log($"Не удалось обновить фильтры, повтор через {RetryMs / 1000} с: {e.Message}", EventLogEntryType.Error);
-                timer.Change(RetryMs, PollMs);
             }
+
+            if (failed)
+            {
+                Arm(timer, RetryMs);
+                return;
+            }
+
+            // An adapter event during Run() may not be reflected in it: re-arm with the debounce.
+            // The re-check after arming closes the window between the check and the Change call.
+            var changed = Volatile.Read(ref _generation) != generation;
+            Arm(timer, changed ? DebounceMs : PollMs);
+            if (!changed && Volatile.Read(ref _generation) != generation)
+                Arm(timer, DebounceMs);
         }
     }
 
