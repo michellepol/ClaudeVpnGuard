@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Корень проекта: `C:\Users\ME\ClaudeVpnGuard`. Все команды — PowerShell из этого каталога.
+- Корень проекта: `C:\Users\ME\Development\Repositories\ClaudeVpnGuard`. Все команды — PowerShell из этого каталога.
 - Только x64: раскладка структур WFP в `WfpNative` рассчитана на 64-битные указатели.
 - Слои: только `FWPM_LAYER_ALE_AUTH_CONNECT_V4` и `_V6`. Веса: permit = 15, block = 1.
 - Provider, sublayer и все фильтры — `PERSISTENT`.
@@ -2145,7 +2145,7 @@ New-Item -ItemType Directory -Force 'C:\Program Files\ClaudeVpnGuard' | Out-Null
   "checkDomains": []
 }
 "@ | Set-Content -Encoding utf8 'C:\Program Files\ClaudeVpnGuard\config.json'
-C:\Users\ME\ClaudeVpnGuard\publish\ClaudeVpnGuard.exe install; "exit=$LASTEXITCODE"
+C:\Users\ME\Development\Repositories\ClaudeVpnGuard\publish\ClaudeVpnGuard.exe install; "exit=$LASTEXITCODE"
 & 'C:\Program Files\ClaudeVpnGuard\ClaudeVpnGuard.exe' status; "exit=$LASTEXITCODE"
 ```
 
@@ -2175,7 +2175,7 @@ Expected:
 
 ```powershell
 Remove-Item 'C:\Program Files\ClaudeVpnGuard\config.json'
-C:\Users\ME\ClaudeVpnGuard\publish\ClaudeVpnGuard.exe install; "exit=$LASTEXITCODE"
+C:\Users\ME\Development\Repositories\ClaudeVpnGuard\publish\ClaudeVpnGuard.exe install; "exit=$LASTEXITCODE"
 & 'C:\Program Files\ClaudeVpnGuard\ClaudeVpnGuard.exe' status; "exit=$LASTEXITCODE"
 Get-Content 'C:\Program Files\ClaudeVpnGuard\config.json'
 ```
