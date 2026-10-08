@@ -14,125 +14,161 @@ public static class Installer
     public static readonly string ExePath = Path.Combine(InstallDir, "ClaudeVpnGuard.exe");
     public static readonly string ConfigPath = Path.Combine(InstallDir, "config.json");
 
+    private const int ServiceAlreadyRunning = 1056; // ERROR_SERVICE_ALREADY_RUNNING
+
     public static int Install()
     {
         if (!RequireAdmin()) return 1;
 
-        Directory.CreateDirectory(InstallDir);
-
-        if (!File.Exists(ConfigPath))
-        {
-            var claudePath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe");
-            File.WriteAllText(ConfigPath, GuardConfig.Default(claudePath).ToJson());
-            Console.WriteLine($"Создан конфиг: {ConfigPath}");
-            Console.WriteLine($"  Путь к Claude Code: {claudePath}");
-        }
-
         GuardConfig config;
+        ulong? luid;
+        PolicyResult policy;
+        bool wasRunning;
         try
         {
-            config = GuardConfig.Load(ConfigPath);
+            Directory.CreateDirectory(InstallDir);
+
+            if (!File.Exists(ConfigPath))
+            {
+                var claudePath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe");
+                File.WriteAllText(ConfigPath, GuardConfig.Default(claudePath).ToJson());
+                Console.WriteLine($"Создан конфиг: {ConfigPath}");
+                Console.WriteLine($"  Путь к Claude Code: {claudePath}");
+            }
+
+            try
+            {
+                config = GuardConfig.Load(ConfigPath);
+            }
+            catch (ConfigException e)
+            {
+                Console.Error.WriteLine(e.Message);
+                return 1;
+            }
+
+            luid = Adapters.FindLuid(config.AdapterName);
+            policy = Policy.Build(config, luid, File.Exists);
+            wasRunning = ServiceIsActive();
         }
-        catch (ConfigException e)
+        catch (Exception e)
         {
-            Console.Error.WriteLine(e.Message);
+            Console.Error.WriteLine($"Установка не выполнена ({e.Message}); служба и фильтры не изменены.");
             return 1;
         }
-
-        var luid = Adapters.FindLuid(config.AdapterName);
-        var policy = Policy.Build(config, luid, File.Exists);
 
         // Everything that can fail without needing the service stopped is done; only now stop it.
-        var wasRunning = ServiceIsActive();
-        if (!StopService())
-        {
-            Console.Error.WriteLine("Не удалось остановить службу, поэтому exe не заменён. Фильтры не изменены.");
-            return 1;
-        }
-
-        if (!CopySelf()) return FailAfterStop(wasRunning);
-
+        var filtersInstalled = false;
         try
         {
-            Wfp.ReplaceFilters(policy.Filters);
+            if (!StopService())
+            {
+                Console.Error.WriteLine("Не удалось остановить службу, поэтому exe не заменён. Фильтры не изменены.");
+                return 1;
+            }
+
+            if (!CopySelf()) return FailAfterStop(wasRunning);
+
+            try
+            {
+                Wfp.ReplaceFilters(policy.Filters);
+            }
+            catch (WfpException e)
+            {
+                Console.Error.WriteLine($"Не удалось установить фильтры: {e.Message}");
+                return FailAfterStop(wasRunning);
+            }
+
+            filtersInstalled = true;
+            Console.WriteLine($"Установлено фильтров: {policy.Filters.Count}");
+            foreach (var warning in policy.Warnings) Console.WriteLine($"Предупреждение: {warning}");
+            if (luid is null)
+                Console.WriteLine($"Адаптер '{config.AdapterName}' не найден: Claude заблокирован, пока VPN не включён.");
+
+            var binPath = $"\"{ExePath}\" service";
+            var registered = ServiceExists()
+                ? Sc("config", GuardService.Name, "binPath=", binPath, "start=", "auto")
+                : Sc("create", GuardService.Name, "binPath=", binPath, "start=", "auto",
+                    "obj=", "LocalSystem", "DisplayName=", "Claude VPN Guard");
+            if (registered != 0)
+            {
+                Console.Error.WriteLine(
+                    $"Фильтры установлены и остаются на месте, но не удалось зарегистрировать службу (sc.exe вернул {registered}).");
+                return FailAfterStop(wasRunning);
+            }
+
+            Sc("description", GuardService.Name, "Пропускает трафик Claude только через VPN.");
+            var failureConfigured = Sc("failure", GuardService.Name,
+                "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/60000");
+            if (failureConfigured != 0)
+                Console.Error.WriteLine(
+                    $"Не удалось настроить автоматический перезапуск службы (sc.exe вернул {failureConfigured}).");
+
+            var started = Sc("start", GuardService.Name);
+            if (started != 0)
+            {
+                Console.Error.WriteLine($"Фильтры установлены, но служба не запустилась (sc.exe вернул {started}).");
+                return 1;
+            }
+
+            if (!WaitForRunning())
+            {
+                Console.Error.WriteLine("Фильтры установлены, но служба не перешла в состояние Running.");
+                return 1;
+            }
+
+            if (failureConfigured != 0) return 1;
+
+            Console.WriteLine("Служба ClaudeVpnGuard установлена и запущена.");
+            return 0;
         }
-        catch (WfpException e)
+        catch (Exception e)
         {
-            Console.Error.WriteLine($"Не удалось установить фильтры: {e.Message}");
+            // Nothing above removes filters: whichever set was installed last stays in force.
+            Console.Error.WriteLine(filtersInstalled
+                ? $"Установка прервана ({e.Message}); новые фильтры установлены и остаются на месте."
+                : $"Установка прервана ({e.Message}); прежние фильтры не изменены.");
             return FailAfterStop(wasRunning);
         }
-
-        Console.WriteLine($"Установлено фильтров: {policy.Filters.Count}");
-        foreach (var warning in policy.Warnings) Console.WriteLine($"Предупреждение: {warning}");
-        if (luid is null)
-            Console.WriteLine($"Адаптер '{config.AdapterName}' не найден: Claude заблокирован, пока VPN не включён.");
-
-        var binPath = $"\"{ExePath}\" service";
-        var registered = ServiceExists()
-            ? Sc("config", GuardService.Name, "binPath=", binPath, "start=", "auto")
-            : Sc("create", GuardService.Name, "binPath=", binPath, "start=", "auto",
-                "obj=", "LocalSystem", "DisplayName=", "Claude VPN Guard");
-        if (registered != 0)
-        {
-            Console.Error.WriteLine($"Не удалось зарегистрировать службу (sc.exe вернул {registered}).");
-            return FailAfterStop(wasRunning);
-        }
-
-        Sc("description", GuardService.Name, "Пропускает трафик Claude только через VPN.");
-        var failureConfigured = Sc("failure", GuardService.Name,
-            "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/60000");
-        if (failureConfigured != 0)
-            Console.Error.WriteLine(
-                $"Не удалось настроить автоматический перезапуск службы (sc.exe вернул {failureConfigured}).");
-
-        var started = Sc("start", GuardService.Name);
-        if (started != 0)
-        {
-            Console.Error.WriteLine($"Фильтры установлены, но служба не запустилась (sc.exe вернул {started}).");
-            return 1;
-        }
-
-        if (!WaitForRunning())
-        {
-            Console.Error.WriteLine("Фильтры установлены, но служба не перешла в состояние Running.");
-            return 1;
-        }
-
-        if (failureConfigured != 0) return 1;
-
-        Console.WriteLine("Служба ClaudeVpnGuard установлена и запущена.");
-        return 0;
     }
 
     public static int Uninstall()
     {
         if (!RequireAdmin()) return 1;
 
-        if (ServiceExists())
-        {
-            if (!StopService())
-            {
-                Console.Error.WriteLine(
-                    "Не удалось остановить службу: она продолжила бы восстанавливать фильтры. Служба и фильтры не тронуты.");
-                return 1;
-            }
-
-            var deleted = Sc("delete", GuardService.Name);
-            if (deleted != 0)
-            {
-                Console.Error.WriteLine($"Не удалось удалить службу (sc.exe вернул {deleted}).");
-                return 1;
-            }
-        }
-
         try
         {
-            Wfp.RemoveAll();
+            if (ServiceExists())
+            {
+                if (!StopService())
+                {
+                    Console.Error.WriteLine(
+                        "Не удалось остановить службу: она продолжила бы восстанавливать фильтры. Служба и фильтры не тронуты.");
+                    return 1;
+                }
+
+                var deleted = Sc("delete", GuardService.Name);
+                if (deleted != 0)
+                {
+                    Console.Error.WriteLine($"Не удалось удалить службу (sc.exe вернул {deleted}).");
+                    return 1;
+                }
+            }
+
+            try
+            {
+                Wfp.RemoveAll();
+            }
+            catch (WfpException e)
+            {
+                Console.Error.WriteLine($"Не удалось удалить фильтры: {e.Message}");
+                return 1;
+            }
         }
-        catch (WfpException e)
+        catch (Exception e)
         {
-            Console.Error.WriteLine($"Не удалось удалить фильтры: {e.Message}");
+            Console.Error.WriteLine(
+                $"Удаление прервано ({e.Message}); фильтры остались на месте, служба могла остановиться. Повторите uninstall.");
             return 1;
         }
 
@@ -295,9 +331,19 @@ public static class Installer
     // Best effort: put the previously running service back so its filters do not go stale.
     private static int FailAfterStop(bool wasRunning)
     {
-        if (wasRunning && Sc("start", GuardService.Name) != 0)
-            Console.Error.WriteLine("Прежняя служба не перезапущена: запустите её вручную или повторите install.");
+        if (!wasRunning) return 1;
 
+        try
+        {
+            // "Already running" is the wanted outcome when the stop itself is what failed.
+            if (Sc("start", GuardService.Name) is 0 or ServiceAlreadyRunning) return 1;
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"Не удалось запустить sc.exe: {e.Message}");
+        }
+
+        Console.Error.WriteLine("Прежняя служба не перезапущена: запустите её вручную или повторите install.");
         return 1;
     }
 
@@ -314,11 +360,11 @@ public static class Installer
                 File.Copy(self, ExePath, overwrite: true);
                 return true;
             }
-            catch (IOException) when (attempt < 10)
+            catch (Exception e) when (e is (IOException or UnauthorizedAccessException) && attempt < 10)
             {
                 Thread.Sleep(500);
             }
-            catch (IOException e)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 Console.Error.WriteLine($"Не удалось скопировать {self} в {ExePath}: {e.Message}");
                 return false;
@@ -328,7 +374,8 @@ public static class Installer
 
     private static int Sc(params string[] args)
     {
-        var info = new ProcessStartInfo("sc.exe")
+        // Full path: a bare name would also be searched for next to our own, user-writable, exe.
+        var info = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "sc.exe"))
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
