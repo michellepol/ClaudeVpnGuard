@@ -228,7 +228,9 @@ public static unsafe class Wfp
                         for (uint c = 0; c < filter->numFilterConditions; c++)
                         {
                             var condition = filter->filterCondition[c];
-                            if (condition.fieldKey == ConditionIpLocalInterface && condition.value.ptr != null)
+                            if (condition.fieldKey == ConditionIpLocalInterface
+                                && condition.value.type == TypeUInt64
+                                && condition.value.ptr != null)
                                 luid = *(ulong*)condition.value.ptr;
                         }
 

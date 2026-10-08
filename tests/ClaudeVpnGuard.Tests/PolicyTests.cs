@@ -39,9 +39,9 @@ public class PolicyTests
     {
         var policy = Policy.Build(Config, Luid, _ => true);
 
+        // Spec constants, deliberately not taken from Policy.PermitWeight / Policy.BlockWeight.
         Assert.All(policy.Filters, f =>
-            Assert.Equal(f.Action == FilterAction.Permit ? Policy.PermitWeight : Policy.BlockWeight, f.Weight));
-        Assert.True(Policy.PermitWeight > Policy.BlockWeight);
+            Assert.Equal(f.Action == FilterAction.Permit ? (byte)15 : (byte)1, f.Weight));
     }
 
     [Fact]
