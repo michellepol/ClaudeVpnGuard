@@ -36,11 +36,9 @@ public static class Policy
 
         foreach (var app in config.AppPaths)
         {
+            // A missing file (auto-update by rename, wrong path) must not leave the application unblocked.
             if (!appExists(app))
-            {
-                warnings.Add($"Файл приложения не найден, фильтры для него пропущены: {app}");
-                continue;
-            }
+                warnings.Add($"Файл приложения не найден, фильтры построены по пути из конфига: {app}");
 
             foreach (var layer in new[] { IpLayer.V4, IpLayer.V6 })
             {

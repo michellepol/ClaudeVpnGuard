@@ -73,7 +73,7 @@ public static class Installer
             {
                 Wfp.ReplaceFilters(policy.Filters);
             }
-            catch (WfpException e)
+            catch (Exception e) when (e is WfpException or AppIdException)
             {
                 Console.Error.WriteLine($"Не удалось установить фильтры: {e.Message}");
                 return FailAfterStop(wasRunning);
@@ -212,7 +212,7 @@ public static class Installer
         if (config is not null)
         {
             foreach (var app in config.AppPaths.Where(p => !File.Exists(p)))
-                Warn($"{app}: файл не найден — фильтров для этого приложения нет");
+                Warn($"{app}: файл не найден — фильтры построены по пути из конфига, проверьте путь");
         }
 
         var luid = config is null ? null : Adapters.FindLuid(config.AdapterName);

@@ -81,14 +81,24 @@ public class PolicyTests
     }
 
     [Fact]
-    public void Missing_app_is_skipped_with_warning_but_ranges_stay_blocked()
+    public void Missing_app_is_still_blocked_and_reported_with_a_warning()
     {
         var policy = Policy.Build(Config, Luid, _ => false);
 
-        Assert.DoesNotContain(policy.Filters, f => f.AppPath is not null);
-        Assert.Equal(4, policy.Filters.Count);
+        Assert.Equal(Policy.Build(Config, Luid, _ => true).Filters, policy.Filters);
+        Assert.Equal(2, policy.Filters.Count(f => f.AppPath == ClaudePath && f.Action == FilterAction.Block));
         var warning = Assert.Single(policy.Warnings);
         Assert.Contains(ClaudePath, warning);
+    }
+
+    [Fact]
+    public void Missing_app_is_still_blocked_without_adapter()
+    {
+        var policy = Policy.Build(Config, null, _ => false);
+
+        Assert.Equal(6, policy.Filters.Count);
+        Assert.Equal(2, policy.Filters.Count(f => f.AppPath == ClaudePath && f.Action == FilterAction.Block));
+        Assert.Single(policy.Warnings);
     }
 
     [Fact]

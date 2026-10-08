@@ -71,22 +71,37 @@ public class ReconcilerTests
     }
 
     [Fact]
-    public void Reapplies_when_app_file_reappears()
+    public void App_file_disappearing_and_reappearing_changes_nothing()
     {
-        _appExists = false;
         var reconciler = Create();
+        reconciler.Run();
+        Assert.Contains(_applied[0], f => f.AppPath == ClaudePath && f.Action == FilterAction.Block);
 
-        var first = reconciler.Run();
-        Assert.Single(first.Warnings);
-        Assert.DoesNotContain(_applied[0], f => f.AppPath is not null);
-        Assert.Contains(_applied[0], f => f.Action == FilterAction.Block && f.Remote is not null);
+        _appExists = false;
+        var gone = reconciler.Run();
+
+        Assert.False(gone.Changed);
+        Assert.Single(gone.Warnings);
 
         _appExists = true;
-        var second = reconciler.Run();
+        var back = reconciler.Run();
 
-        Assert.True(second.Changed);
-        Assert.Empty(second.Warnings);
-        Assert.Contains(_applied[1], f => f.AppPath == ClaudePath && f.Action == FilterAction.Block);
+        Assert.False(back.Changed);
+        Assert.Empty(back.Warnings);
+        Assert.Single(_applied);
+    }
+
+    [Fact]
+    public void Missing_app_file_is_blocked_from_the_first_run()
+    {
+        _appExists = false;
+
+        var result = Create().Run();
+
+        Assert.True(result.Changed);
+        Assert.Single(result.Warnings);
+        Assert.Equal(10, _applied[0].Count);
+        Assert.Contains(_applied[0], f => f.AppPath == ClaudePath && f.Action == FilterAction.Block);
     }
 
     [Fact]

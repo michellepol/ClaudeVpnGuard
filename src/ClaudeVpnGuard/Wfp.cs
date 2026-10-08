@@ -114,9 +114,11 @@ public static unsafe class Wfp
         var v4 = default(V4AddrMask);
         var v6 = default(V6AddrMask);
         ulong luid = 0;
-        ByteBlob* appId = null;
+        var appId = default(ByteBlob);
 
-        try
+        // A managed copy, pinned until FwpmFilterAdd0 returns; never freed with FwpmFreeMemory0.
+        var appIdBytes = spec.AppPath is { } appPath ? AppId.Resolve(appPath) : null;
+        fixed (byte* appIdData = appIdBytes)
         {
             if (spec.Remote is { } cidr)
             {
@@ -145,14 +147,14 @@ public static unsafe class Wfp
                 }
             }
 
-            if (spec.AppPath is { } appPath)
+            if (appIdBytes is not null)
             {
-                Check(FwpmGetAppIdFromFileName0(appPath, &appId), "FwpmGetAppIdFromFileName0");
+                appId = new ByteBlob { size = (uint)appIdBytes.Length, data = appIdData };
                 conditions[count++] = new Condition
                 {
                     fieldKey = ConditionAleAppId,
                     matchType = MatchEqual,
-                    value = new Value { type = TypeByteBlob, ptr = appId },
+                    value = new Value { type = TypeByteBlob, ptr = &appId },
                 };
             }
 
@@ -198,10 +200,6 @@ public static unsafe class Wfp
                 ulong id;
                 Check(FwpmFilterAdd0(engine, &filter, null, &id), $"FwpmFilterAdd0 ({spec.Name})");
             }
-        }
-        finally
-        {
-            if (appId != null) FwpmFreeMemory0((void**)&appId);
         }
     }
 
