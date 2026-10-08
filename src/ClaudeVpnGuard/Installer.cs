@@ -235,8 +235,15 @@ public static class Installer
             if (stale > 0)
                 Warn($"разрешающих фильтров с устаревшим LUID: {stale} — Claude заблокирован, пока служба их не обновит");
 
-            if (luid is not null && filters.Count > 0 && filters.All(f => f.InterfaceLuid is null))
-                Warn("адаптер найден, но разрешающих фильтров нет — Claude заблокирован, пока служба их не добавит");
+            // Names do not contain the LUID, so this does not replace the stale-LUID check above.
+            if (config is not null && filters.Count > 0)
+            {
+                var expected = Policy.Build(config, luid, File.Exists).Filters;
+                var diff = Policy.Compare(expected, filters.Select(f => f.Name));
+                if (diff.Missing.Count + diff.Unexpected.Count > 0)
+                    Warn($"набор фильтров не соответствует конфигу и состоянию адаптера: не хватает {diff.Missing.Count}, " +
+                         $"лишних {diff.Unexpected.Count} — перезапустите службу: Restart-Service ClaudeVpnGuard");
+            }
         }
         catch (WfpException e)
         {

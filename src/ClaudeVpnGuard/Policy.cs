@@ -16,6 +16,8 @@ public sealed record FilterSpec(
 
 public sealed record PolicyResult(IReadOnlyList<FilterSpec> Filters, IReadOnlyList<string> Warnings);
 
+public sealed record FilterDiff(IReadOnlyList<string> Missing, IReadOnlyList<string> Unexpected);
+
 public static class Policy
 {
     public const byte PermitWeight = 15;
@@ -50,6 +52,26 @@ public static class Policy
         }
 
         return new PolicyResult(filters, warnings);
+    }
+
+    // Names are compared as multisets: a range listed twice in the config yields two filters
+    // with the same name, which is neither missing nor unexpected when both are installed.
+    public static FilterDiff Compare(IReadOnlyList<FilterSpec> expected, IEnumerable<string> installedNames)
+    {
+        var balance = new Dictionary<string, int>();
+        foreach (var spec in expected)
+            balance[spec.Name] = balance.GetValueOrDefault(spec.Name) + 1;
+        foreach (var name in installedNames)
+            balance[name] = balance.GetValueOrDefault(name) - 1;
+
+        var missing = new List<string>();
+        var unexpected = new List<string>();
+        foreach (var (name, count) in balance)
+        {
+            for (var i = 0; i < count; i++) missing.Add(name);
+            for (var i = 0; i > count; i--) unexpected.Add(name);
+        }
+        return new FilterDiff(missing, unexpected);
     }
 
     private static FilterSpec Block(string name, IpLayer layer, Cidr? remote, string? app) =>

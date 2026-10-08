@@ -118,6 +118,76 @@ public class PolicyTests
     }
 
     [Fact]
+    public void Compare_reports_nothing_for_the_expected_set()
+    {
+        var expected = Policy.Build(Config, Luid, _ => true).Filters;
+
+        var diff = Policy.Compare(expected, expected.Select(f => f.Name).Reverse());
+
+        Assert.Empty(diff.Missing);
+        Assert.Empty(diff.Unexpected);
+    }
+
+    [Fact]
+    public void Compare_reports_a_missing_filter()
+    {
+        var expected = Policy.Build(Config, Luid, _ => true).Filters;
+        var removed = expected.First(f => f.Action == FilterAction.Block).Name;
+
+        var diff = Policy.Compare(expected, expected.Select(f => f.Name).Where(n => n != removed));
+
+        Assert.Equal(new[] { removed }, diff.Missing);
+        Assert.Empty(diff.Unexpected);
+    }
+
+    [Fact]
+    public void Compare_reports_an_unexpected_filter()
+    {
+        var expected = Policy.Build(Config, Luid, _ => true).Filters;
+
+        var diff = Policy.Compare(expected, expected.Select(f => f.Name).Append("ClaudeVpnGuard: block 192.0.2.0/24"));
+
+        Assert.Empty(diff.Missing);
+        Assert.Equal(new[] { "ClaudeVpnGuard: block 192.0.2.0/24" }, diff.Unexpected);
+    }
+
+    [Fact]
+    public void Compare_reports_permits_missing_after_the_adapter_appeared()
+    {
+        var installed = Policy.Build(Config, null, _ => true).Filters.Select(f => f.Name);
+
+        var diff = Policy.Compare(Policy.Build(Config, Luid, _ => true).Filters, installed);
+
+        Assert.Equal(4, diff.Missing.Count);
+        Assert.All(diff.Missing, name => Assert.Contains("via VPN", name));
+        Assert.Empty(diff.Unexpected);
+    }
+
+    [Fact]
+    public void Compare_counts_duplicate_names_instead_of_misreporting_them()
+    {
+        // The same range listed twice in the config yields two filters with one name.
+        var config = Config with { Ipv4Cidrs = [Cidr.Parse("160.79.104.0/21"), Cidr.Parse("160.79.104.0/21")] };
+        var expected = Policy.Build(config, null, _ => true).Filters;
+        var names = expected.Select(f => f.Name).ToList();
+        var duplicate = "ClaudeVpnGuard: block 160.79.104.0/21";
+        Assert.Equal(2, names.Count(n => n == duplicate));
+
+        var same = Policy.Compare(expected, names);
+        Assert.Empty(same.Missing);
+        Assert.Empty(same.Unexpected);
+
+        var oneGone = names.ToList();
+        oneGone.Remove(duplicate);
+        Assert.Equal(new[] { duplicate }, Policy.Compare(expected, oneGone).Missing);
+        Assert.Empty(Policy.Compare(expected, oneGone).Unexpected);
+
+        var oneExtra = Policy.Compare(expected, names.Append(duplicate));
+        Assert.Empty(oneExtra.Missing);
+        Assert.Equal(new[] { duplicate }, oneExtra.Unexpected);
+    }
+
+    [Fact]
     public void Same_input_builds_equal_output()
     {
         Assert.Equal(
