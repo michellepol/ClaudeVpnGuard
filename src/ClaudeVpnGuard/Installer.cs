@@ -19,8 +19,6 @@ public static class Installer
         if (!RequireAdmin()) return 1;
 
         Directory.CreateDirectory(InstallDir);
-        StopService();
-        if (!CopySelf()) return 1;
 
         if (!File.Exists(ConfigPath))
         {
@@ -44,6 +42,17 @@ public static class Installer
 
         var luid = Adapters.FindLuid(config.AdapterName);
         var policy = Policy.Build(config, luid, File.Exists);
+
+        // Everything that can fail without needing the service stopped is done; only now stop it.
+        var wasRunning = ServiceIsActive();
+        if (!StopService())
+        {
+            Console.Error.WriteLine("Не удалось остановить службу, поэтому exe не заменён. Фильтры не изменены.");
+            return 1;
+        }
+
+        if (!CopySelf()) return FailAfterStop(wasRunning);
+
         try
         {
             Wfp.ReplaceFilters(policy.Filters);
@@ -51,7 +60,7 @@ public static class Installer
         catch (WfpException e)
         {
             Console.Error.WriteLine($"Не удалось установить фильтры: {e.Message}");
-            return 1;
+            return FailAfterStop(wasRunning);
         }
 
         Console.WriteLine($"Установлено фильтров: {policy.Filters.Count}");
@@ -67,11 +76,15 @@ public static class Installer
         if (registered != 0)
         {
             Console.Error.WriteLine($"Не удалось зарегистрировать службу (sc.exe вернул {registered}).");
-            return 1;
+            return FailAfterStop(wasRunning);
         }
 
         Sc("description", GuardService.Name, "Пропускает трафик Claude только через VPN.");
-        Sc("failure", GuardService.Name, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/60000");
+        var failureConfigured = Sc("failure", GuardService.Name,
+            "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/60000");
+        if (failureConfigured != 0)
+            Console.Error.WriteLine(
+                $"Не удалось настроить автоматический перезапуск службы (sc.exe вернул {failureConfigured}).");
 
         var started = Sc("start", GuardService.Name);
         if (started != 0)
@@ -79,6 +92,14 @@ public static class Installer
             Console.Error.WriteLine($"Фильтры установлены, но служба не запустилась (sc.exe вернул {started}).");
             return 1;
         }
+
+        if (!WaitForRunning())
+        {
+            Console.Error.WriteLine("Фильтры установлены, но служба не перешла в состояние Running.");
+            return 1;
+        }
+
+        if (failureConfigured != 0) return 1;
 
         Console.WriteLine("Служба ClaudeVpnGuard установлена и запущена.");
         return 0;
@@ -90,7 +111,13 @@ public static class Installer
 
         if (ServiceExists())
         {
-            StopService();
+            if (!StopService())
+            {
+                Console.Error.WriteLine(
+                    "Не удалось остановить службу: она продолжила бы восстанавливать фильтры. Служба и фильтры не тронуты.");
+                return 1;
+            }
+
             var deleted = Sc("delete", GuardService.Name);
             if (deleted != 0)
             {
@@ -144,6 +171,12 @@ public static class Installer
         catch (ConfigException e)
         {
             Warn(e.Message);
+        }
+
+        if (config is not null)
+        {
+            foreach (var app in config.AppPaths.Where(p => !File.Exists(p)))
+                Warn($"{app}: файл не найден — фильтров для этого приложения нет");
         }
 
         var luid = config is null ? null : Adapters.FindLuid(config.AdapterName);
@@ -214,12 +247,21 @@ public static class Installer
     private static bool ServiceExists() =>
         ServiceController.GetServices().Any(s => s.ServiceName == GuardService.Name);
 
-    private static void StopService()
+    private static bool ServiceIsActive()
     {
-        if (!ServiceExists()) return;
+        if (!ServiceExists()) return false;
 
         using var service = new ServiceController(GuardService.Name);
-        if (service.Status == ServiceControllerStatus.Stopped) return;
+        return service.Status != ServiceControllerStatus.Stopped;
+    }
+
+    // True when the service does not exist or is really stopped afterwards.
+    private static bool StopService()
+    {
+        if (!ServiceExists()) return true;
+
+        using var service = new ServiceController(GuardService.Name);
+        if (service.Status == ServiceControllerStatus.Stopped) return true;
 
         try
         {
@@ -230,6 +272,33 @@ public static class Installer
         {
             Console.Error.WriteLine($"Не удалось остановить службу: {e.Message}");
         }
+
+        service.Refresh();
+        return service.Status == ServiceControllerStatus.Stopped;
+    }
+
+    private static bool WaitForRunning()
+    {
+        using var service = new ServiceController(GuardService.Name);
+        try
+        {
+            service.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(15));
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.ServiceProcess.TimeoutException)
+        {
+        }
+
+        service.Refresh();
+        return service.Status == ServiceControllerStatus.Running;
+    }
+
+    // Best effort: put the previously running service back so its filters do not go stale.
+    private static int FailAfterStop(bool wasRunning)
+    {
+        if (wasRunning && Sc("start", GuardService.Name) != 0)
+            Console.Error.WriteLine("Прежняя служба не перезапущена: запустите её вручную или повторите install.");
+
+        return 1;
     }
 
     private static bool CopySelf()
