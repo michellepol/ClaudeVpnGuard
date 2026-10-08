@@ -17,6 +17,7 @@ public sealed class GuardService : ServiceBase
     private Timer? _timer;
     private IDisposable? _watch;
     private int _generation;
+    private string? _lastError; // guarded by _gate
 
     public GuardService(string configPath)
     {
@@ -38,8 +39,11 @@ public sealed class GuardService : ServiceBase
             Wfp.ReplaceFilters);
 
         _timer = new Timer(_ => Tick(), null, Timeout.Infinite, Timeout.Infinite);
-        Tick();
+
+        // Subscribed before the first reconcile so an adapter event in between is not left to the poll:
+        // the callback only bumps the generation and arms the timer, which Tick then notices.
         _watch = Adapters.Watch(OnAdapterChanged);
+        Tick();
     }
 
     protected override void OnStop()
@@ -86,6 +90,11 @@ public sealed class GuardService : ServiceBase
             try
             {
                 var result = _reconciler.Run();
+                if (_lastError is not null)
+                {
+                    _lastError = null;
+                    Log("Обновление фильтров снова работает.", EventLogEntryType.Information);
+                }
                 if (result.Changed)
                 {
                     var text = "Фильтры обновлены.";
@@ -97,7 +106,13 @@ public sealed class GuardService : ServiceBase
             catch (Exception e)
             {
                 failed = true;
-                Log($"Не удалось обновить фильтры, повтор через {RetryMs / 1000} с: {e.Message}", EventLogEntryType.Error);
+
+                // The retry repeats every few seconds; the log gets one entry per distinct failure.
+                if (e.Message != _lastError)
+                {
+                    _lastError = e.Message;
+                    Log($"Не удалось обновить фильтры, повтор каждые {RetryMs / 1000} с: {e.Message}", EventLogEntryType.Error);
+                }
             }
 
             if (failed)
