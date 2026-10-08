@@ -33,14 +33,13 @@ public class ConfigTests
     }
 
     [Fact]
-    public void Accepts_comments_trailing_commas_and_unknown_fields()
+    public void Accepts_comments_and_trailing_commas()
     {
         var c = GuardConfig.Parse("""
             {
               // мой VPN
               "adapterName": "AmneziaVPN",
               "ipv4Cidrs": ["160.79.104.0/21",],
-              "somethingElse": 42,
             }
             """);
 
@@ -48,6 +47,43 @@ public class ConfigTests
         Assert.Empty(c.Ipv6Cidrs);
         Assert.Empty(c.AppPaths);
         Assert.Empty(c.CheckDomains);
+    }
+
+    [Fact]
+    public void Accepts_keys_in_any_case()
+    {
+        var c = GuardConfig.Parse("""
+            {
+              "AdapterName": "AmneziaVPN",
+              "IPV4CIDRS": ["160.79.104.0/21"],
+              "ipv6cidrs": ["2607:6bc0::/48"],
+              "APPPATHS": ["C:\\Tools\\claude.exe"],
+              "checkdomains": ["claude.ai"]
+            }
+            """);
+
+        Assert.Equal("AmneziaVPN", c.AdapterName);
+        Assert.Equal(new[] { Cidr.Parse("160.79.104.0/21") }, c.Ipv4Cidrs);
+        Assert.Equal(new[] { Cidr.Parse("2607:6bc0::/48") }, c.Ipv6Cidrs);
+        Assert.Equal(new[] { @"C:\Tools\claude.exe" }, c.AppPaths);
+        Assert.Equal(new[] { "claude.ai" }, c.CheckDomains);
+    }
+
+    [Theory]
+    [InlineData("somethingElse")]
+    [InlineData("ipv4Cidr")]
+    public void Rejects_unknown_key_and_names_it(string key)
+    {
+        var json = $$"""
+            {
+              "adapterName": "AmneziaVPN",
+              "{{key}}": ["160.79.104.0/21"],
+              "appPaths": ["C:\\Tools\\claude.exe"]
+            }
+            """;
+
+        var e = Assert.Throws<ConfigException>(() => GuardConfig.Parse(json));
+        Assert.Contains(key, e.Message);
     }
 
     [Theory]
