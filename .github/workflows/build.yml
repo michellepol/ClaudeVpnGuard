@@ -1,0 +1,31 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Test
+        run: dotnet test -c Release
+
+      - name: Publish
+        run: >
+          dotnet publish src/ClaudeVpnGuard -c Release -r win-x64 --self-contained
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeVpnGuard-win-x64
+          path: publish/ClaudeVpnGuard.exe
+          if-no-files-found: error
